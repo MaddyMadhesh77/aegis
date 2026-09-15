@@ -12,7 +12,7 @@ from aegis_system.reasoning.fol_engine import FOLKnowledgeBase
 from aegis_system.reasoning.resolution import resolve_clauses
 from aegis_system.reasoning.unifier import unify
 from aegis_system.search.adversarial_search import minimax_decision
-from aegis_system.search.graph_builder import build_graph
+from aegis_system.search.graph_builder import from_adjacency
 from aegis_system.search.path_search import bfs_search, astar_search
 from aegis_system.planning.strips_planner import STRIPSPlanner, Action
 from aegis_system.simulation.simulator import generate_attack_simulation
@@ -155,7 +155,7 @@ def test_attack_classifier_and_ttc_regressor_work():
 
 
 def test_graph_builder_and_minimax_engine():
-    graph = build_graph(
+    graph = from_adjacency(
         {
             "HostA": {"HostB": 1},
             "HostB": {"HostC": 1},

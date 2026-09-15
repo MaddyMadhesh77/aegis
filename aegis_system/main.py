@@ -5,7 +5,6 @@ from aegis_system.perception.regressor import TimeToCompromiseRegressor
 from aegis_system.planning.executor import ExecutionAgent
 from aegis_system.planning.strips_planner import STRIPSPlanner, Action
 from aegis_system.probabilistic.hmm_engine import HMM
-from aegis_system.search.graph_builder import build_graph
 from aegis_system.search.path_search import bfs_search
 
 
@@ -43,7 +42,7 @@ class AEGISSystem:
         return self.regressor.predict(X)
 
     def find_path(self, graph, start, target):
-        return bfs_search(build_graph(graph), start, target)
+        return bfs_search(graph, start, target)
 
     def plan_response(self, initial_state, goal_state):
         return self.planner.plan(initial_state, goal_state)
