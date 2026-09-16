@@ -62,6 +62,7 @@ class Proof:
     proved: bool
     bindings: Dict[Var, Term] = field(default_factory=dict)
     clauses_generated: int = 0
+    method: str = "resolution"
     trace_id: Optional[str] = None
 
 
