@@ -12,7 +12,13 @@ dependencies = [
   "numpy>=1.26.0",
   "networkx>=3.2.1",
   "scikit-learn>=1.4.0",
+  "owlready2>=0.46",
+  "pandas>=2.0",
 ]
+
+[tool.setuptools.package-data]
+"aegis_system.knowledge" = ["data/*.json"]
+"aegis_system" = ["scenarios/*.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
