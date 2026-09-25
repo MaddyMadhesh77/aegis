@@ -35,9 +35,21 @@ PROFILES: Dict[str, Tuple[float, ...]] = {
     "Exploitation":  (0.8,  2_500.0, 2_500.0,  30.0, 0.30,  3.0),
     "C2":            (30.0,   300.0,   300.0,  60.0, 0.02,  1.0),
     "Exfiltration":  (20.0, 90_000.0,  500.0, 300.0, 0.02,  1.0),
+    # Technique-level profiles used by scripted scenarios (names match the semantic net's alert classes).
+    "portscan":           (0.1,     60.0,      0.0,   2.0, 0.95, 40.0),
+    "supply_chain":       (5.0,  2_000.0, 400_000.0, 300.0, 0.05,  1.0),  # trojanized update download
+    "c2_beacon":          (60.0,   250.0,    250.0,  12.0, 0.01,  1.0),  # long, tiny, periodic
+    "smb_lateral":        (2.0, 30_000.0, 30_000.0, 120.0, 0.25,  3.0),
+    "credential_dumping": (0.5, 12_000.0,    600.0,  25.0, 0.40,  6.0),
+    "pass_the_ticket":    (0.3,  1_800.0,  1_800.0,   8.0, 0.50,  2.0),
+    "exfiltration":       (20.0, 90_000.0,   500.0, 300.0, 0.02,  1.0),
 }
 
-ACTIONS = {"isolate", "restore", "block_edge", "unblock_edge", "kill_process", "patch"}
+# Legitimate activity that looks like an attack phase: IT vulnerability scans (Recon),
+# administrators' remote sessions (Exploitation), nightly backups (Exfiltration).
+LOOKALIKE_PROFILES = ("Recon", "Exploitation", "Exfiltration")
+
+ACTIONS = {"isolate", "restore", "block_edge", "unblock_edge", "kill_process", "patch", "reimage", "collect_memory"}
 
 
 @dataclass(frozen=True)
@@ -77,12 +89,21 @@ class EnvironmentState:
     persistent: Set[str] = field(default_factory=set)
     isolated: Set[str] = field(default_factory=set)
     patched: Set[str] = field(default_factory=set)
+    memory_captured: Set[str] = field(default_factory=set)
     blocked: Set[Tuple[str, str]] = field(default_factory=set)
     attacker_position: Optional[str] = None
 
     @property
     def phase(self) -> str:
         return KILL_CHAIN[self.phase_index]
+
+
+def sample_profile(rng: np.random.Generator, profile: str) -> Dict[str, float]:
+    """One noisy flow from a traffic profile (25% relative noise; syn_ratio stays a fraction)."""
+    means = np.array(PROFILES[profile])
+    noisy = rng.normal(means, 0.25 * means + 0.01)
+    noisy[4] = np.clip(noisy[4], 0.0, 1.0)
+    return {k: float(max(0.0, x)) for k, x in zip(FEATURES, noisy)}
 
 
 def iptables_command(action: ActionCommand) -> str:
@@ -101,6 +122,10 @@ def iptables_command(action: ActionCommand) -> str:
         return f"edr kill-suspicious --host {action.target}"
     if action.name == "patch":
         return f"patch-manager apply --host {action.target}"
+    if action.name == "reimage":
+        return f"deploy reimage --host {action.target}"
+    if action.name == "collect_memory":
+        return f"edr collect-memory --host {action.target}"
     raise ValueError(f"Unknown action {action.name!r}")
 
 
@@ -116,6 +141,7 @@ class NetworkEnvironment:
         phase_advance: float = 0.5,
         persistence_prob: float = 0.3,
         benign_flows: int = 8,
+        lookalike_rate: float = 0.0,
     ):
         self.graph = graph if graph is not None else example_topology()
         if entry not in self.graph:
@@ -128,6 +154,7 @@ class NetworkEnvironment:
         self.phase_advance = phase_advance
         self.persistence_prob = persistence_prob
         self.benign_flows = benign_flows
+        self.lookalike_rate = lookalike_rate  # share of benign flows that resemble an attack phase
         self.reset()
 
     # ------------------------------------------------------------------ lifecycle
@@ -224,7 +251,10 @@ class NetworkEnvironment:
             if not edges:
                 break
             u, v = self.rng.choice(edges)
-            flows.append(Flow(u, v, self._sample("benign"), malicious=False))
+            profile = "benign"
+            if self.lookalike_rate and self.rng.random() < self.lookalike_rate:
+                profile = self.rng.choice(LOOKALIKE_PROFILES)
+            flows.append(Flow(u, v, self._sample(profile), malicious=False))
         attacker = self.state.attacker_position
         if attacker is not None and attacker not in self.state.isolated:
             succ = [v for v in self.usable_graph().successors(attacker)] or [attacker]
@@ -234,10 +264,7 @@ class NetworkEnvironment:
         return Observation(self.state.tick, flows)
 
     def _sample(self, profile: str) -> Dict[str, float]:
-        means = np.array(PROFILES[profile])
-        noisy = self.np_rng.normal(means, 0.25 * means + 0.01)
-        noisy[4] = np.clip(noisy[4], 0.0, 1.0)  # syn_ratio is a fraction
-        return {k: float(max(0.0, x)) for k, x in zip(FEATURES, noisy)}
+        return sample_profile(self.np_rng, profile)
 
     def ground_truth(self) -> Dict:
         s = self.state
@@ -280,13 +307,38 @@ class NetworkEnvironment:
                     s.compromised.discard(action.target)
             elif action.name == "patch":
                 s.patched.add(action.target)
+            elif action.name == "reimage":  # wipes the host, persistence included
+                s.compromised.discard(action.target)
+                s.persistent.discard(action.target)
+            elif action.name == "collect_memory":
+                s.memory_captured.add(action.target)
         self._log("action", action=str(action), success=success)
         return ExecutionResult(
             step=action,
             success=success,
-            observed_state={"compromised": sorted(s.compromised), "isolated": sorted(s.isolated)},
+            observed_state=self.sensed_state(scope=[h for h in (action.target, action.destination) if h]),
             command=command,
         )
+
+    def sensed_state(self, scope: Optional[List[str]] = None) -> Dict[str, List]:
+        """What the defender's sensors report after an action.
+
+        Firewall and patch state is the defender's own configuration, so it is always
+        known. Host compromise is only checked on the hosts in `scope` (the hosts the
+        action touched); with no scope, every host is reported (full visibility).
+        """
+        s = self.state
+        compromised = sorted(s.compromised if scope is None else s.compromised & set(scope))
+        report = {
+            "compromised": compromised,
+            "isolated": sorted(s.isolated),
+            "blocked": sorted(s.blocked),
+            "patched": sorted(s.patched),
+            "memory_captured": sorted(s.memory_captured),
+        }
+        if scope is not None:
+            report["scope"] = sorted(scope)
+        return report
 
     # ------------------------------------------------------------------ status
 
