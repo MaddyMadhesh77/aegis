@@ -1,0 +1,47 @@
+{
+  "name": "solarwinds",
+  "title": "SolarWinds / SUNBURST supply-chain intrusion (simplified)",
+  "description": "A trojanized Orion update gives the attacker a foothold on the monitoring server. After a dormant period of low-volume C2 beaconing, the attacker moves to an administrator's workstation, dumps cached credentials, forges Kerberos tickets to reach the domain controller, reads mail on Exchange, and exfiltrates it. Host names, timings and traffic are simulated; the step sequence follows public reporting on the 2020 campaign (FireEye, CISA AA20-352A).",
+  "entry": "Internet",
+  "targets": ["DC", "ExchangeServer"],
+  "hosts": {
+    "Internet":       {"type": "internet", "criticality": 0.0},
+    "OrionServer":    {"type": "server", "services": ["https", "snmp"], "criticality": 0.5, "value": 3.0,
+                       "cves": [{"id": "CVE-2020-10148", "cvss": 9.8}]},
+    "AdminWS":        {"type": "workstation", "services": ["rdp", "smb"], "criticality": 0.2, "value": 2.0,
+                       "admin_credentials": true, "cves": [{"id": "CVE-SIM-7001", "cvss": 7.5}]},
+    "WS1":            {"type": "workstation", "services": ["smb"], "criticality": 0.1, "value": 1.0,
+                       "cves": [{"id": "CVE-SIM-7002", "cvss": 6.5}]},
+    "WS2":            {"type": "workstation", "services": ["smb"], "criticality": 0.1, "value": 1.0},
+    "FileServer":     {"type": "server", "services": ["smb"], "criticality": 0.6, "value": 5.0,
+                       "cves": [{"id": "CVE-SIM-7003", "cvss": 7.8}]},
+    "DC":             {"type": "domain_controller", "services": ["ldap", "kerberos"], "criticality": 1.0,
+                       "value": 10.0, "cves": [{"id": "CVE-2020-1472", "cvss": 10.0}]},
+    "ExchangeServer": {"type": "server", "services": ["smtp", "https"], "criticality": 0.8, "value": 9.0,
+                       "cves": [{"id": "CVE-2021-26855", "cvss": 9.1}]}
+  },
+  "links": [
+    ["Internet", "OrionServer"],
+    ["OrionServer", "AdminWS"], ["OrionServer", "WS1"], ["OrionServer", "FileServer"],
+    ["AdminWS", "DC"], ["AdminWS", "ExchangeServer"],
+    ["WS1", "WS2"], ["WS1", "FileServer"], ["WS2", "FileServer"],
+    ["FileServer", "DC"], ["DC", "ExchangeServer"]
+  ],
+  "beacon_every": 3,
+  "steps": [
+    {"name": "Trojanized Orion update installed", "alert": "supply_chain", "phase": "Delivery",
+     "src": "Internet", "dst": "OrionServer", "delay": 2, "persistent": true},
+    {"name": "SUNBURST C2 beaconing (dormant period)", "alert": "c2_beacon", "phase": "C2",
+     "src": "OrionServer", "dst": "Internet", "delay": 3, "implant": true},
+    {"name": "Lateral movement to the admin workstation", "alert": "smb_lateral", "phase": "Exploitation",
+     "src": "OrionServer", "dst": "AdminWS", "delay": 6},
+    {"name": "Credential dumping on the admin workstation", "alert": "credential_dumping", "phase": "Exploitation",
+     "src": "AdminWS", "dst": "AdminWS", "delay": 2},
+    {"name": "Forged Kerberos ticket to the domain controller", "alert": "pass_the_ticket", "phase": "Exploitation",
+     "src": "AdminWS", "dst": "DC", "delay": 2},
+    {"name": "Mailbox access on Exchange", "alert": "smb_lateral", "phase": "C2",
+     "src": "DC", "dst": "ExchangeServer", "delay": 2},
+    {"name": "Exfiltration of mail", "alert": "exfiltration", "phase": "Exfiltration",
+     "src": "ExchangeServer", "dst": "Internet", "delay": 2}
+  ]
+}

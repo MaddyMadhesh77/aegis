@@ -69,6 +69,16 @@ class TraceStore:
     def by_stage(self, stage: str) -> List[TraceNode]:
         return sorted((n for n in self._nodes.values() if n.stage == stage), key=lambda n: n.seq)
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Dict[str, Any]]) -> "TraceStore":
+        """Rebuild a store saved with to_dict (parents always precede children in insertion order)."""
+        store = cls()
+        for seq, (tid, n) in enumerate(data.items(), start=1):
+            store._nodes[tid] = TraceNode(tid, n["stage"], n["summary"], dict(n.get("payload", {})),
+                                          list(n.get("parents", [])), seq)
+        store._counter = itertools.count(len(data) + 1)
+        return store
+
     def to_dict(self) -> Dict[str, Dict[str, Any]]:
         return {
             tid: {"stage": n.stage, "summary": n.summary, "payload": n.payload, "parents": list(n.parents)}
